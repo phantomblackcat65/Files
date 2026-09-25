@@ -1,0 +1,78 @@
+name: Build Files MSIX (x64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag або гілка files-community/Files (напр. v4.2.9 або main)'
+        required: true
+        default: 'v4.2.9'
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    env:
+      APP_PROJECT_PATH: '${{ github.workspace }}\src\Files.App\Files.App.csproj'
+      SOLUTION_PATH: '${{ github.workspace }}\Files.slnx'
+      OUT_DIR: '${{ github.workspace }}\artifacts\AppxPackages\'
+      PFX_PATH: '${{ github.workspace }}\artifacts\FilesApp_SelfSigned.pfx'
+      CER_PATH: '${{ github.workspace }}\artifacts\AppxPackages\FilesApp_SelfSigned.cer'
+
+    steps:
+    - name: Checkout Files source
+      uses: actions/checkout@v6
+      with:
+        repository: files-community/Files
+        ref: ${{ inputs.ref }}
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v3
+
+    - name: Setup NuGet
+      uses: NuGet/setup-nuget@v3
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        global-json-file: global.json
+
+    - name: Create self-signed certificate
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path $env:OUT_DIR | Out-Null
+        ./.github/scripts/Generate-SelfCertPfx.ps1 -Destination $env:PFX_PATH
+        $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object FriendlyName -eq 'FilesApp_SelfSigned' | Select-Object -First 1
+        Export-Certificate -Cert $cert -FilePath $env:CER_PATH | Out-Null
+
+    - name: Restore
+      shell: pwsh
+      run: |
+        msbuild $env:SOLUTION_PATH -t:Restore -p:Platform=x64 -p:Configuration=Release -p:PublishReadyToRun=true -v:quiet
+
+    - name: Build & package MSIX
+      shell: pwsh
+      run: |
+        msbuild $env:APP_PROJECT_PATH `
+          -t:Build `
+          -p:Configuration=Release `
+          -p:Platform=x64 `
+          -p:AppxBundlePlatforms=x64 `
+          -p:AppxBundle=Always `
+          -p:GenerateAppxPackageOnBuild=true `
+          -p:UapAppxPackageBuildMode=SideloadOnly `
+          -p:AppxPackageDir=$env:OUT_DIR `
+          -p:AppxPackageSigningEnabled=true `
+          -p:PackageCertificateKeyFile=$env:PFX_PATH `
+          -p:PackageCertificatePassword="" `
+          -p:PackageCertificateThumbprint="" `
+          -v:minimal -clp:ErrorsOnly
+
+    - name: List output
+      shell: pwsh
+      run: Get-ChildItem -Recurse $env:OUT_DIR | Select-Object FullName, Length
+
+    - name: Upload MSIX
+      uses: actions/upload-artifact@v4
+      with:
+        name: Files-MSIX-x64
+        path: ${{ env.OUT_DIR }}
